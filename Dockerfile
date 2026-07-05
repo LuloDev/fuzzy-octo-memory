@@ -63,6 +63,7 @@ RUN npm ci --omit=dev --no-audit --no-fund \
 # Bring in the source tree + the Prisma client generated in the builder stage.
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/src/frontend/dist ./src/frontend/dist
 COPY prisma ./prisma
 COPY src ./src
 COPY tests ./tests
