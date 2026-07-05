@@ -1,0 +1,39 @@
+# Keep the build context small. Anything not required to build or run the
+# backend goes here.
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Node / build artifacts
+node_modules
+dist
+build
+coverage
+.npm
+.eslintcache
+*.log
+
+# Local env files (compose reads .env from the host via env_file)
+.env
+.env.*
+!.env.example
+
+# Local SQLite DBs (the container creates its own inside the volume)
+prisma/dev.db*
+prisma/dev.db-journal
+
+# IDE / OS junk
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Documentation that lives outside the container
+docs
+specs
+.claude
+.specify
+README.md
+LICENSE

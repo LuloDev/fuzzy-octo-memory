@@ -1,0 +1,134 @@
+// Prisma schema for the Iron Condor trading bot.
+// All money columns use Decimal — see src/types/money.ts for the runtime helper.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Per-ticker configuration. The trader's editable settings.
+/// Note: `automaticManeuversEnabled` is added per the spec US1 acceptance #3
+/// (Pragmatic resolution of Analysis F1 during implementation).
+model TickerConfig {
+  id                       String   @id @default(uuid())
+  symbol                   String   @unique
+  enabled                  Boolean  @default(true)
+  automaticManeuversEnabled Boolean @default(true)
+  allocationPercentage     Decimal
+  targetDelta              Decimal
+  widthOfSpread            Decimal
+  takeProfitPercentage     Decimal
+  stopLossMultiplier       Decimal
+  dailyLossLimit           Decimal  @default(-0.03)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  revisions                TickerConfigRevision[]
+  positions                Position[]
+
+  @@map("ticker_config")
+}
+
+/// Append-only revision history of TickerConfig.
+model TickerConfigRevision {
+  id              String   @id @default(uuid())
+  tickerConfigId  String
+  tickerConfig    TickerConfig @relation(fields: [tickerConfigId], references: [id], onDelete: Cascade)
+  previousValue   String   // JSON
+  newValue        String   // JSON
+  reason          String?
+  createdAt       DateTime @default(now())
+
+  @@index([tickerConfigId, createdAt])
+  @@map("ticker_config_revision")
+}
+
+/// A live or recently closed Iron Condor on one weekly expiration.
+model Position {
+  id              String   @id @default(uuid())
+  tickerConfigId  String
+  tickerConfig    TickerConfig @relation(fields: [tickerConfigId], references: [id])
+  symbol          String
+  expiration      DateTime
+  shortPutStrike  Decimal
+  longPutStrike   Decimal
+  shortCallStrike Decimal
+  longCallStrike  Decimal
+  contracts       Int
+  entryCredit     Decimal
+  entryTimestamp  DateTime
+  currentValue    Decimal?
+  status          String   // OPEN, TAKE_PROFIT, STOP_LOSS, ROLLED, PANIC_CLOSED
+  closedAt        DateTime?
+  closingPnL      Decimal?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  events          PositionEvent[]
+  orders          OrderSubmission[]
+
+  @@index([symbol, expiration])
+  @@index([status, symbol])
+  @@map("position")
+}
+
+/// Immutable record of every state transition.
+model PositionEvent {
+  id              String   @id @default(uuid())
+  positionId      String
+  position        Position @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  kind            String   // OPENED, TAKE_PROFIT_TRIGGERED, STOP_LOSS_TRIGGERED, UNTESTED_ROLL, ROLL_EXECUTED, PANIC_CLOSED, HEARTBEAT
+  marketSnapshot  String   // JSON
+  realizedPnL     Decimal?
+  intentPayload   String?  // JSON
+  createdAt       DateTime @default(now())
+  orders          OrderSubmission[]
+
+  @@index([positionId, createdAt])
+  @@map("position_event")
+}
+
+/// Immutable record of every order sent to the broker.
+model OrderSubmission {
+  id                String   @id @default(uuid())
+  positionEventId   String?
+  positionEvent     PositionEvent? @relation(fields: [positionEventId], references: [id])
+  positionId        String
+  position          Position @relation(fields: [positionId], references: [id])
+  intentId          String
+  alpacaOrderId     String?
+  requestPayload    String   // JSON
+  responsePayload   String?  // JSON
+  status            String   // PENDING, ACCEPTED, FILLED, PARTIALLY_FILLED, CANCELED, REJECTED
+  submittedAt       DateTime @default(now())
+  acknowledgedAt    DateTime?
+  filledAt          DateTime?
+
+  @@index([positionId])
+  @@index([intentId])
+  @@map("order_submission")
+}
+
+/// Daily aggregate for the equity curve.
+model TickerDailyPnL {
+  id              String   @id @default(uuid())
+  symbol          String
+  date            DateTime
+  realizedPnL     Decimal
+  unrealizedPnL   Decimal
+
+  @@unique([symbol, date])
+  @@map("ticker_daily_pnl")
+}
+
+/// Application-level state (e.g. last heartbeat timestamp).
+model AppState {
+  id              String   @id @default(uuid())
+  key             String   @unique
+  value           String
+  updatedAt       DateTime @updatedAt
+
+  @@map("app_state")
+}

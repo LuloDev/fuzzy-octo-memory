@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+prisma/dev.db*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.tmp
+*.swpsrc/frontend/node_modules
+src/frontend/dist

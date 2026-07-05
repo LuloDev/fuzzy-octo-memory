@@ -1,0 +1,64 @@
+import { NavLink } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { getHealth } from '@/lib/api';
+
+export function Header() {
+  const { data } = useQuery({ queryKey: ['health'], queryFn: getHealth, refetchInterval: 30_000 });
+  const dryRun = data?.dryRun ?? false;
+  return (
+    <header className="bg-panel border-b border-slate-700">
+      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">🦅</span>
+          <div>
+            <h1 className="text-lg font-semibold leading-tight">Iron Condor Bot</h1>
+            <p className="text-xs text-slate-400 leading-tight">Automated weekly options</p>
+          </div>
+        </div>
+        <nav className="flex gap-4 text-sm">
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              `px-3 py-1.5 rounded-md ${isActive ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white'}`
+            }
+          >
+            Dashboard
+          </NavLink>
+          <NavLink
+            to="/tickers"
+            className={({ isActive }) =>
+              `px-3 py-1.5 rounded-md ${isActive ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white'}`
+            }
+          >
+            Tickers
+          </NavLink>
+          <NavLink
+            to="/positions"
+            className={({ isActive }) =>
+              `px-3 py-1.5 rounded-md ${isActive ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white'}`
+            }
+          >
+            Positions
+          </NavLink>
+        </nav>
+        <div className="ml-auto flex items-center gap-3">
+          <span
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium ${
+              dryRun ? 'bg-amber-500/20 text-amber-300' : 'bg-green-500/20 text-green-300'
+            }`}
+            title={dryRun ? 'No broker traffic. Maneuvers are evaluated and logged.' : 'Live broker traffic.'}
+          >
+            <span className={`w-2 h-2 rounded-full ${dryRun ? 'bg-amber-400' : 'bg-green-400'} animate-pulse`} />
+            {dryRun ? 'DRY-RUN' : 'LIVE'}
+          </span>
+          {data?.status === 'ok' && (
+            <span className="text-xs text-slate-400">
+              up {Math.floor((data.uptimeSeconds ?? 0) / 60)}m
+            </span>
+          )}
+        </div>
+      </div>
+    </header>
+  );
+}
