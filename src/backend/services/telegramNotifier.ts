@@ -1,5 +1,6 @@
 import { env } from '@/backend/config/env';
 import { logger } from '@/backend/services/structuredLogger';
+import { persistence } from '@/backend/services/persistenceService';
 import type { Alert, AlertKind } from '@/types/events';
 
 // Telegram MarkdownV2 reserved characters that MUST be escaped inside text segments.
@@ -52,12 +53,14 @@ export class TelegramNotifier {
 
   async send(alert: Alert): Promise<boolean> {
     const text = formatAlert(alert);
+    let success = false;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       if (await postTelegram(this.botToken, this.chatId, text)) {
         const f: Record<string, string> = { kind: alert.kind };
         if (alert.ticker !== undefined) f.ticker = alert.ticker;
         logger.info('telegram', 'alert sent', f);
-        return true;
+        success = true;
+        break;
       }
       // exponential backoff
       if (attempt < this.maxRetries) {
@@ -65,8 +68,25 @@ export class TelegramNotifier {
         await this.sleeper(delay);
       }
     }
-    logger.error('telegram', 'alert failed after retries', { kind: alert.kind });
-    return false;
+    if (!success) {
+      logger.error('telegram', 'alert failed after retries', { kind: alert.kind });
+    }
+
+    // FR-010/FR-011: record every delivery attempt for the health widget.
+    persistence
+      .setAppState(
+        'last_telegram_delivery',
+        JSON.stringify({
+          ts: new Date().toISOString(),
+          status: success ? 'OK' : 'DEGRADED',
+          kind: alert.kind,
+        }),
+      )
+      .catch((e: unknown) =>
+        logger.warn('telegram', 'telemetry write failed', { error: (e as Error).message }),
+      );
+
+    return success;
   }
 
   /** Used by US5 dead-man's switch to assert no message was missed. */

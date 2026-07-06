@@ -4,6 +4,8 @@ import { telegram } from '@/backend/services/telegramNotifier';
 import { logger } from '@/backend/services/structuredLogger';
 import { execution } from '@/backend/services/executionService';
 import { evaluate } from '@/backend/risk/riskEngine';
+import { marketHours } from '@/backend/services/marketHoursService';
+import { getPauseFlags } from '@/backend/services/killStateService';
 import type { Position, TickerConfig, MarketSnapshot } from '@/types/domain';
 import type { AlertKind } from '@/types/events';
 
@@ -39,28 +41,83 @@ export class MonitoringService {
   async tick(): Promise<void> {
     if (this.stopping) return;
     const now = Date.now();
+
+    // FR-013/FR-015/FR-018: graduated kill switches short-circuit at the top
+    // of every cycle. Reads are cache-bypassed (1s TTL in killStateService)
+    // so transitions land at most one tick later.
+    const flags = await getPauseFlags();
+
     const tickers = await persistence.listTickers();
     const positions = await persistence.listOpenPositions();
 
-    // 1) Entry sweep (US2).
-    for (const t of tickers) {
-      if (!t.enabled) continue;
-      const exp = new Date(currentWeekExpirationISO());
-      const exists = await persistence.findOpenPositionForWeek(t.symbol, exp);
-      if (exists) continue;
-      const snapshot = await fetchSnapshotForOpen(t); // test seam
-      if (!snapshot) continue;
-      const contracts = computeContracts(t);
-      await execution.openIronCondor(t, snapshot, contracts);
+    // 1) Entry sweep (US2). Skip when `new-entries` is paused. We still log
+    // an event so the audit feed and Telegram see the rejection.
+    if (flags.newEntries) {
+      logger.info('monitoring', 'entry sweep skipped — kill_state_new_entries=paused');
+      // Use a synthetic positionId: PositionEvent.positionId is non-nullable,
+      // so we attach to a dedicated "engine" record. If the schema is awkward
+      // we instead emit a telegram alert and a logger.warn; both pathways let
+      // the operator see the rejection.
+      await telegram
+        .send({
+          kind: 'WARN_KILL_SWITCH_ENTRIES',
+          title: 'New-entries paused',
+          body: `kill_state_new_entries=paused — entry sweep skipped at ${new Date(now).toISOString()}`,
+        })
+        .catch((e: unknown) => logger.error('monitoring', 'telegram notify failed', { error: (e as Error).message }));
+    } else {
+      for (const t of tickers) {
+        if (!t.enabled) continue;
+        const exp = new Date(currentWeekExpirationISO());
+        const exists = await persistence.findOpenPositionForWeek(t.symbol, exp);
+        if (exists) continue;
+        const snapshot = await fetchSnapshotForOpen(t); // test seam
+        if (!snapshot) continue;
+        const contracts = computeContracts(t);
+        await execution.openIronCondor(t, snapshot, contracts);
+      }
     }
 
-    // 2) Risk sweep (US3).
+    // 2) Risk sweep (US3). Evaluated always (introspection is cheap) but the
+    // maneuver dispatch is skipped when `maneuvers` is paused; intents are
+    // still logged so the audit feed reflects what would have happened.
     for (const p of positions) {
       const cfg = tickers.find((t) => t.id === (p as unknown as { tickerConfigId?: string }).tickerConfigId) ?? null;
       if (!cfg) continue;
       const snapshot = await fetchSnapshotForRisk(p); // test seam
       if (!snapshot) continue;
+
+      // FR-021 / US8: record a mid-price observation per tick so the
+      // real-vs-theoretical theta chart has something to plot.
+      if (p.currentValue) {
+        await persistence
+          .recordEvent({
+            positionId: p.id,
+            kind: 'MID_OBSERVED',
+            marketSnapshot: { mid: p.currentValue, observedAt: new Date(now).toISOString() },
+          })
+          .catch((e: unknown) =>
+            logger.warn('monitoring', 'mid observation failed to persist', { error: (e as Error).message }),
+          );
+      }
+
       const intents = evaluate(p, snapshot, cfg);
+      if (flags.maneuvers) {
+        logger.info('monitoring', 'maneuver dispatch skipped — kill_state_maneuvers=paused', {
+          positionId: p.id,
+          intentCount: intents.length,
+        });
+        await persistence
+          .recordEvent({
+            positionId: p.id,
+            kind: 'PAUSED_FOR_MANEUVERS',
+            marketSnapshot: { ...snapshot, intents, reason: 'PAUSED_FOR_MANEUVERS' },
+          })
+          .catch((e: unknown) =>
+            logger.error('monitoring', 'failed to log paused-maneuver event', { error: (e as Error).message }),
+          );
+        continue;
+      }
       await execution.applyIntents(p, intents, snapshot);
     }
 
@@ -69,6 +126,9 @@ export class MonitoringService {
   }
 
   private async maybeHeartbeat(now: number): Promise<void> {
+    // Constitution §VI: heartbeat only applies during market hours.
+    if (!(await marketHours.isOpen())) return;
+
     if (now - this.lastHeartbeatSent >= HEARTBEAT_PERIOD_MS) {
       this.lastHeartbeatSent = now;
       await telegram.send({

@@ -12,11 +12,22 @@ import {
   TickerConfigDto,
   UpdateTickerDto,
   UpdateTicker,
+  AuditFeedDto,
+  HealthResponseDto,
+  KillStateResponseDto,
+  PositionWithProximityDto,
+  SlippageResponseDto,
+  PerformanceAggregateDto,
   type Metrics,
   type EquityCurve,
   type Payoff,
   type Position,
+  type PositionWithProximity,
   type TickerConfig,
+  type AuditFeed,
+  type KillFeature,
+  type KillAction,
+  type PerformanceWindow,
 } from './contracts';
 
 // Single machine-readable error envelope per contracts/rest-api.md.
@@ -121,3 +132,39 @@ export type PanicResult = {
 };
 export const triggerPanic = (reason = 'manual') =>
   request<PanicResult>('POST', '/api/panic', { reason });
+
+// ----- US1: positions with proximity -----
+export const listPositionsWithProximity = async (): Promise<PositionWithProximity[]> => {
+  const raw = await jsonFetch<{ positions: unknown[] }>('/api/positions');
+  return raw.positions.map((p) => PositionWithProximityDto.parse(p));
+};
+
+// ----- US4: audit feed -----
+export const getAuditFeed = (params: { limit?: number; cursor?: string; intentId?: string; positionId?: string } = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit) qs.set('limit', String(params.limit));
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.intentId) qs.set('intentId', params.intentId);
+  if (params.positionId) qs.set('positionId', params.positionId);
+  return jsonFetch<AuditFeed>(`/api/events?${qs.toString()}`).then((raw) => AuditFeedDto.parse(raw));
+};
+
+// ----- US5: health (typed) -----
+export const getHealthTyped = () =>
+  jsonFetch<unknown>('/api/health').then((raw) => HealthResponseDto.parse(raw));
+
+// ----- US6: kill switches -----
+export const getKillState = () =>
+  jsonFetch<unknown>('/api/kill/state').then((raw) => KillStateResponseDto.parse(raw));
+export const postKill = (feature: KillFeature, action: KillAction, reason: string) =>
+  request<unknown>('POST', `/api/kill/${feature}`, { action, reason });
+
+// ----- US7: slippage -----
+export const getSlippage = (days = 30) =>
+  jsonFetch<unknown>(`/api/metrics/slippage?days=${days}`).then((raw) => SlippageResponseDto.parse(raw));
+
+// ----- US9: performance -----
+export const getPerformance = (window: PerformanceWindow = '30d') =>
+  jsonFetch<unknown>(`/api/metrics/performance?window=${window}`).then((raw) =>
+    PerformanceAggregateDto.parse(raw),
+  );

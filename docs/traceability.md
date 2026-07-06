@@ -55,3 +55,39 @@ These resolve open analysis findings without contradicting the spec:
 - **F12 (LOW)** — Margin pre-flight multiple (1.5×) is pinned in `src/backend/services/executionService.ts` with a named constant.
 
 Remaining MEDIUM findings (F4 SC-001 SLA test, F5 SC-007 reconstruction test, F6 broker-outage edge-case integration) require a running Prisma client and are scaffolded here; they will be wired in a follow-up that runs against a fresh `prisma migrate dev`.
+
+---
+
+## Feature 002 — Algorithmic Command Center (FR mapping)
+
+Each requirement in `specs/002-algo-command-center/spec.md` maps to a task in
+`specs/002-algo-command-center/tasks.md` and one or more source files.
+
+| Requirement | Title | Task(s) | Source file(s) | Tests |
+|---|---|---|---|---|
+| FR-001 | Risk radar (proximity thermometers) | T017, T019, T020 | `src/backend/services/proximityClassifier.ts`, `src/frontend/src/components/ProximityRadar.tsx` | `tests/unit/services/proximityClassifier.test.ts` |
+| FR-002 | SAFE/WARNING/BREACH thresholds | T017, T018 | `src/backend/services/proximityClassifier.ts` | `tests/unit/services/proximityClassifier.test.ts` |
+| FR-003 | Expected-Move overlay | T040–T043 | `src/backend/services/expectedMove.ts`, `src/frontend/src/components/PayoffChart.tsx` | `tests/unit/services/expectedMove.test.ts` |
+| FR-004 | Gamma curve | T061–T064 | `src/backend/services/gammaCurve.ts`, `src/frontend/src/components/GammaCurve.tsx` | `tests/unit/services/gammaCurve.test.ts` |
+| FR-005 | Theta real-vs-theoretical | T066–T069 | `src/backend/services/thetaDecay.ts`, `src/frontend/src/components/ThetaDecayChart.tsx` | (covered by gamma tests pattern) |
+| FR-006 | Empty-state fallbacks | T020, T043, T044, T064 | `src/frontend/src/components/*.tsx` | (manual) |
+| FR-007 | Audit feed reverse-chronological | T024, T030 | `src/backend/api/routes/auditFeed.ts`, `src/frontend/src/components/AuditFeed.tsx` | `tests/unit/util/jsonTruncate.test.ts` |
+| FR-008 | Audit pagination + intent filter | T024 | `src/backend/api/routes/auditFeed.ts` | (scaffold) |
+| FR-009 | Payload truncation >8KB | T025, T027 | `src/backend/util/jsonTruncate.ts` | `tests/unit/util/jsonTruncate.test.ts` |
+| FR-010 | Broker/quote/Telegram freshness | T012, T013, T045, T046, T048 | `src/backend/services/alpacaService.ts`, `src/backend/services/telegramNotifier.ts`, `src/backend/services/healthSnapshot.ts`, `src/frontend/src/components/HealthWidget.tsx` | (scaffold) |
+| FR-011 | 15s refresh cadence + cache-control | T014, T048, T073 | `src/backend/api/server.ts`, `src/frontend/src/components/HealthWidget.tsx` | (manual) |
+| FR-012 | Rate-limit headroom pill | T012, T048 | `src/backend/services/alpacaService.ts`, `src/frontend/src/components/HealthWidget.tsx` | (scaffold) |
+| FR-013 | Graduated kill switches (2) | T033, T034, T038 | `src/backend/api/routes/kill.ts`, `src/backend/services/killStateService.ts` | `tests/unit/services/killStateService.test.ts` |
+| FR-014 | Live/paused/panic badge | T037, T072 | `src/frontend/src/components/Header.tsx` | (manual) |
+| FR-015 | Pause entries short-circuit | T011 | `src/backend/services/monitoringService.ts` | (scaffold) |
+| FR-016 | Pause maneuvers short-circuit | T011 | `src/backend/services/monitoringService.ts` | (scaffold) |
+| FR-017 | Kill state endpoint | T034 | `src/backend/api/routes/kill.ts` | (scaffold) |
+| FR-018 | Kill state persists across restarts | T009, T015 | `src/backend/services/killStateService.ts`, `src/backend/app.ts` | `tests/unit/services/killStateService.test.ts` |
+| FR-019 | Slippage median/p90 + histogram | T051–T054 | `src/backend/services/slippage.ts`, `src/frontend/src/components/SlippagePanel.tsx` | `tests/unit/services/slippage.test.ts` |
+| FR-020 | Slippage excludes DRY_RUN fills | T052 | `src/backend/api/routes/analytics.ts` | (scaffold) |
+| FR-021 | Mid-price observation per cycle | T067 | `src/backend/services/monitoringService.ts` | (scaffold) |
+| FR-022 | Theta divergence band | T068, T069 | `src/backend/api/routes/positions.ts`, `src/frontend/src/components/ThetaDecayChart.tsx` | (manual) |
+| FR-023 | Performance windows selector | T056, T058, T059 | `src/backend/services/performance.ts`, `src/frontend/src/components/PerformancePanel.tsx` | `tests/unit/services/performance.test.ts` |
+| FR-024 | Insufficient-samples guard | T056, T057 | `src/backend/services/performance.ts` | `tests/unit/services/performance.test.ts` |
+| FR-025 | Performance aggregate cached | T058 | `src/backend/api/routes/analytics.ts` | (scaffold) |
+| FR-026 | Three-column layout | T071 | `src/frontend/src/components/Layout.tsx` | (manual) |

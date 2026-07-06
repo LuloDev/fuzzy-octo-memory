@@ -52,6 +52,12 @@ function db(): PrismaClient {
   return _prisma;
 }
 
+// Public escape hatch for services that need the raw Prisma client (e.g.
+// binding to killStateService). Throws if init() has not been awaited.
+export function dbUnsafe(): PrismaClient {
+  return db();
+}
+
 function toConfigDto(row: {
   id: string;
   symbol: string;
@@ -151,18 +157,13 @@ export const persistence = {
   ): Promise<TickerConfig> {
     const previous = await db().tickerConfig.findUnique({ where: { id } });
     if (!previous) throw new Error(`TickerConfig ${id} not found`);
+    const data: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (v !== undefined) data[k] = v;
+    }
     const updated = await db().tickerConfig.update({
       where: { id },
-      data: {
-        enabled: patch.enabled,
-        automaticManeuversEnabled: patch.automaticManeuversEnabled,
-        allocationPercentage: patch.allocationPercentage,
-        targetDelta: patch.targetDelta,
-        widthOfSpread: patch.widthOfSpread,
-        takeProfitPercentage: patch.takeProfitPercentage,
-        stopLossMultiplier: patch.stopLossMultiplier,
-        dailyLossLimit: patch.dailyLossLimit,
-      },
+      data: data as never,
     });
     await db().tickerConfigRevision.create({
       data: {
@@ -190,9 +191,10 @@ export const persistence = {
     return r ? toPositionDto(r) : null;
   },
 
-  async createPosition(position: Omit<Position, 'id'>): Promise<Position> {
+  async createPosition(position: Omit<Position, 'id'> & { tickerConfigId: string }): Promise<Position> {
     const r = await db().position.create({
       data: {
+        tickerConfigId: position.tickerConfigId,
         symbol: position.symbol,
         expiration: new Date(position.expiration),
         shortPutStrike: position.shortPutStrike,
@@ -236,7 +238,7 @@ export const persistence = {
         positionId: args.positionId,
         kind: args.kind,
         marketSnapshot: JSON.stringify(args.marketSnapshot),
-        realizedPnL: args.realizedPnL,
+        ...(args.realizedPnL !== undefined ? { realizedPnL: args.realizedPnL } : {}),
         intentPayload: args.intent ? JSON.stringify(args.intent) : null,
       },
     });
@@ -268,6 +270,21 @@ export const persistence = {
   async getLastHeartbeat(): Promise<string | null> {
     const r = await db().appState.findUnique({ where: { key: 'lastHeartbeatAt' } });
     return r?.value ?? null;
+  },
+
+  // Generic AppState helpers used by the kill-switch, health and
+  // performance subsystems (spec 002-algo-command-center).
+  async getAppState(key: string): Promise<string | null> {
+    const r = await db().appState.findUnique({ where: { key } });
+    return r?.value ?? null;
+  },
+
+  async setAppState(key: string, value: string): Promise<void> {
+    await db().appState.upsert({
+      where: { key },
+      create: { key, value },
+      update: { value },
+    });
   },
 
   async setLastHeartbeat(iso: string): Promise<void> {

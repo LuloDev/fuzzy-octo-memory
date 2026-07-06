@@ -8,7 +8,10 @@ export type PositionEventKind =
   | 'ROLL_EXECUTED'
   | 'PANIC_CLOSED'
   | 'HEARTBEAT'
-  | 'OPEN_REJECTED';
+  | 'OPEN_REJECTED'
+  | 'KILL_STATE_CHANGED'
+  | 'PAUSED_FOR_MANEUVERS'
+  | 'MID_OBSERVED';
 
 export type PositionEvent = {
   id: string;
@@ -68,7 +71,8 @@ export type AlertKind =
   | 'MARGIN_SHORTFALL'
   | 'CIRCUIT_BREAKER'
   | 'HEARTBEAT'
-  | 'WARN_NO_HEARTBEAT';
+  | 'WARN_NO_HEARTBEAT'
+  | 'WARN_KILL_SWITCH_ENTRIES';
 
 export type Alert = {
   kind: AlertKind;

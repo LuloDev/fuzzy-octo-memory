@@ -9,7 +9,12 @@ import { equityCurveRoutes } from '@/backend/api/routes/equityCurve';
 import { panicRoutes } from '@/backend/api/routes/panic';
 import { healthRoutes } from '@/backend/api/routes/health';
 import { auditRoutes } from '@/backend/api/routes/audit';
+import { killRoutes } from '@/backend/api/routes/kill';
+import { auditFeedRoutes } from '@/backend/api/routes/auditFeed';
+import { analyticsRoutes } from '@/backend/api/routes/analytics';
 import { logger } from '@/backend/services/structuredLogger';
+import { bindKillStatePersistence } from '@/backend/services/killStateService';
+import { dbUnsafe } from '@/backend/services/persistenceService';
 import { ErrorDto } from '@/shared/contracts';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,7 +26,24 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
 
+  // Bind the kill-state service to the Prisma client so the API can flip
+  // its singletons (must happen before route registration that touches them).
+  bindKillStatePersistence(dbUnsafe());
+
   await app.register(cors, { origin: true });
+
+  // FR-011: GET responses get a 10s cache header by default to keep the
+  // dashboard from hammering Alpaca in multi-tab scenarios. /api/kill/*
+  // MUST NOT be cached so operator toggles land at most one cycle later.
+  app.addHook('onSend', async (req, reply) => {
+    if (req.method !== 'GET') return;
+    const url = req.url;
+    if (url.startsWith('/api/kill/')) {
+      reply.header('cache-control', 'no-store');
+    } else if (url.startsWith('/api/')) {
+      reply.header('cache-control', 'public, max-age=10, stale-while-revalidate=10');
+    }
+  });
 
   // Centralized error envelope per contracts/rest-api.md.
   app.setErrorHandler((err: unknown, _req, reply) => {
@@ -46,6 +68,9 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(panicRoutes, { prefix: '/api' });
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(auditRoutes, { prefix: '/api' });
+  await app.register(killRoutes, { prefix: '/api/kill' });
+  await app.register(auditFeedRoutes, { prefix: '/api' });
+  await app.register(analyticsRoutes, { prefix: '/api' });
 
   // Serve the built SPA from src/frontend/dist if it exists. The SPA uses
   // BrowserRouter, so any non-/api GET falls back to index.html (enabling

@@ -1,6 +1,7 @@
 import { env } from '@/backend/config/env';
 import { logger } from '@/backend/services/structuredLogger';
-import type { OptionQuote } from '@/types/domain';
+import { persistence } from '@/backend/services/persistenceService';
+import type { MarketClock, OptionQuote } from '@/types/domain';
 
 // Thin REST wrapper around Alpaca Options v2 API.
 // NEVER throws on broker errors — all returns are Result-style.
@@ -37,23 +38,77 @@ async function request<T>(
   const url = `${env.APCA_BASE_URL}${path}`;
   const init: RequestInit = { method, headers: authHeaders() };
   if (body !== undefined) init.body = JSON.stringify(body);
+  const startMs = Date.now();
+  let result: Result<T>;
   try {
     const res = await fetch(url, init);
     const text = await res.text();
     if (!res.ok) {
       if (res.status === 429) {
-        return fail('RATE_LIMITED', `Alpaca rate limit on ${method} ${path}`, { httpStatus: res.status, body: text });
+        result = fail('RATE_LIMITED', `Alpaca rate limit on ${method} ${path}`, { httpStatus: res.status, body: text });
+      } else {
+        result = fail('NON_2XX', `Alpaca ${method} ${path} → ${res.status}`, { httpStatus: res.status, body: text });
       }
-      return fail('NON_2XX', `Alpaca ${method} ${path} → ${res.status}`, { httpStatus: res.status, body: text });
-    }
-    try {
-      return ok(JSON.parse(text) as T);
-    } catch {
-      return fail('BAD_JSON', `Alpaca returned non-JSON on ${method} ${path}`);
+    } else {
+      try {
+        result = ok(JSON.parse(text) as T);
+      } catch {
+        result = fail('BAD_JSON', `Alpaca returned non-JSON on ${method} ${path}`);
+      }
     }
   } catch (err) {
-    return fail('TRANSPORT', `Alpaca transport on ${method} ${path}: ${(err as Error).message}`);
+    result = fail('TRANSPORT', `Alpaca transport on ${method} ${path}: ${(err as Error).message}`);
   }
+
+  // FR-010/FR-011/FR-012: surface broker health to the dashboard.
+  // Recording is best-effort — never let telemetry failure mask the real error.
+  recordHealth(method, path, result, Date.now() - startMs).catch((e: unknown) =>
+    logger.error('alpaca', 'telemetry write failed', { error: (e as Error).message }),
+  );
+
+  return result;
+}
+
+// Map raw call results to the HealthSignal status enum.
+type HealthKind = 'broker' | 'quote';
+async function recordHealth(method: string, path: string, result: Result<unknown>, latencyMs: number): Promise<void> {
+  const isQuote = path.startsWith('/v2/options/quotes') || path.startsWith('/v2/options/snapshots');
+  const kind: HealthKind = isQuote ? 'quote' : 'broker';
+  const status: 'OK' | 'DEGRADED' | 'UNREACHABLE' = !result.ok
+    ? result.error.kind === 'TRANSPORT'
+      ? 'UNREACHABLE'
+      : 'DEGRADED'
+    : 'OK';
+  const payload = JSON.stringify({
+    ts: new Date().toISOString(),
+    status,
+    latencyMs,
+    retryAfterSeconds: result.ok ? null : null,
+    method,
+    path,
+  });
+  const key = kind === 'quote' ? 'last_quote_fetch' : 'last_broker_call';
+  await persistence.setAppState(key, payload);
+  if (!result.ok && result.error.kind === 'RATE_LIMITED') {
+    await increment429();
+  }
+}
+
+// FR-012: rolling 60-minute window of 429 hits, persisted as a JSON list.
+async function increment429(): Promise<void> {
+  const raw = await persistence.getAppState('alpaca_429_count');
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let arr: string[] = [];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as string[];
+      arr = parsed.filter((ts) => new Date(ts).getTime() >= cutoff);
+    } catch {
+      arr = [];
+    }
+  }
+  arr.push(new Date().toISOString());
+  await persistence.setAppState('alpaca_429_count', JSON.stringify(arr));
 }
 
 export type Account = {
@@ -115,6 +170,23 @@ export class AlpacaService {
       out.delta = r.value.greeks.delta;
     }
     return ok(out);
+  }
+
+  /** Current market clock — used to determine if the market is open. */
+  async getClock(): Promise<Result<MarketClock>> {
+    const r = await request<{
+      is_open: boolean;
+      timestamp: string;
+      next_open: string;
+      next_close: string;
+    }>('GET', '/v2/clock');
+    if (!r.ok) return r;
+    return ok({
+      isOpen: r.value.is_open,
+      timestamp: r.value.timestamp,
+      nextOpen: r.value.next_open,
+      nextClose: r.value.next_close,
+    });
   }
 
   /** Submit a multileg (or any) order; returns the raw response. */

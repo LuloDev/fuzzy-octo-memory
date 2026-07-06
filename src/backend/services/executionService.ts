@@ -101,6 +101,7 @@ export class ExecutionService {
 
     // Persist the position + events + order row.
     const position = await persistence.createPosition({
+      tickerConfigId: config.id,
       symbol: config.symbol,
       expiration,
       shortPutStrike: built.plan.shortPut,

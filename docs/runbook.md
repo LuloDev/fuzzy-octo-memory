@@ -45,9 +45,75 @@ Verify by checking the `dr:alert` payload in the next Telegram heartbeat.
 
 ## Inspecting an audit trail
 
+The dashboard renders a chronological event feed at `/audit` with expandable
+JSON payloads. Each row exposes the `intentId` (click to copy) so you can
+correlate with the broker.
+
 ```sh
+# UI
+open http://127.0.0.1:3000/audit
+
+# JSON, paginated with cursor
+curl 'http://127.0.0.1:3000/api/events?limit=200'
+
+# Filter by intent (paste the intentId copied from a row)
+curl 'http://127.0.0.1:3000/api/events?intentId=<paste>'
+
+# JSONL dump of everything (still available, used by audit rotation)
 curl 'http://127.0.0.1:3000/api/audit/export?from=2026-06-01&to=2026-07-05'
 ```
+
+The legacy `/api/audit/export` endpoint returns a JSONL stream. Use the new
+`/api/events` endpoint when you need paging semantics or a typed projection.
+
+## Running the test suite on NixOS
+
+Prisma's CDN does not publish a `linux-nixos` engine build, so a fresh
+checkout needs a one-time setup before tests will pass:
+
+```sh
+# One-time: downloads the debian-openssl-3.0.x engines to ~/.cache and
+# creates wrappers that load via nix-ld.
+scripts/fetch-prisma-engines.sh
+
+# Tests then work without any env vars. The vitest setup file at
+# tests/setup/nixos-prisma.ts auto-detects the cache and points Prisma at it.
+npx vitest run
+```
+
+The setup file is a no-op on non-NixOS systems, so the same `vitest run`
+invocation works on Linux/macOS without the fetch step.
+
+## Graduated kill switches (002-algo-command-center)
+
+Two intermediate pause toggles sit between "all clear" and "HARD PANIC":
+
+- **Pause new entries** — the entry sweep is skipped every cycle; existing
+  positions are still managed. Use when you want to halt fresh exposure but
+  keep the defense running on the current book.
+- **Pause maneuvers** — automatic TP/SL/roll execution is skipped, but the
+  engine keeps evaluating. Use when you want to manage exits by hand.
+
+Both states persist across container restarts (they live in `AppState`).
+
+```sh
+# Pause new entries
+curl -X POST http://127.0.0.1:3000/api/kill/new-entries \
+  -H 'content-type: application/json' \
+  -d '{"action":"pause","reason":"manual"}'
+
+# Resume maneuvers
+curl -X POST http://127.0.0.1:3000/api/kill/maneuvers \
+  -H 'content-type: application/json' \
+  -d '{"action":"resume","reason":"back to normal"}'
+
+# Inspect combined state (header badge polls this at 5s cadence)
+curl http://127.0.0.1:3000/api/kill/state | jq
+```
+
+The **HARD PANIC** (`POST /api/panic`) remains the single legitimate bypass
+of the risk engine — it cancels all open orders and closes every position
+to market. Reserve it for unrecoverable situations.
 
 ## Common failure modes
 

@@ -4,6 +4,7 @@ import { initPersistence, persistence } from '@/backend/services/persistenceServ
 import { env } from '@/backend/config/env';
 import { logger } from '@/backend/services/structuredLogger';
 import { telegram } from '@/backend/services/telegramNotifier';
+import { marketHours } from '@/backend/services/marketHoursService';
 
 // Composition root. Wires Fastify server + monitoring loop + heartbeat scheduler.
 
@@ -24,9 +25,14 @@ async function main(): Promise<void> {
 
   // Heartbeat scheduler (US5): emit a Telegram heartbeat on a coarse cadence
   // independent of the monitoring loop, so a dead monitoring loop still
-  // surfaces a heartbeat-based dead-man alert.
+  // surfaces a heartbeat-based dead-man alert. Constitution §VI: only during
+  // market hours.
   setInterval(() => {
-    void telegram.heartbeat().catch((e) => logger.error('app', 'heartbeat failed', { error: (e as Error).message }));
+    void (async () => {
+      if (await marketHours.isOpen()) {
+        await telegram.heartbeat();
+      }
+    })().catch((e) => logger.error('app', 'heartbeat failed', { error: (e as Error).message }));
   }, 60 * 60 * 1000);
 
   const shutdown = async (sig: string) => {

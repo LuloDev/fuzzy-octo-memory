@@ -1,10 +1,23 @@
 import { NavLink } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getHealth } from '@/lib/api';
+import { getHealth, getKillState } from '@/lib/api';
+import { HealthWidget } from './HealthWidget';
+import { modeFromKillState, type Mode } from '@/lib/contracts';
+
+const MODE_STYLE: Record<Mode, { cls: string; dot: string; label: string }> = {
+  LIVE: { cls: 'bg-green-500/20 text-green-300', dot: 'bg-green-400', label: 'LIVE' },
+  PAUSED_ENTRIES: { cls: 'bg-amber-500/20 text-amber-300', dot: 'bg-amber-400', label: 'PAUSED: ENTRIES' },
+  PAUSED_MANEUVERS: { cls: 'bg-amber-500/20 text-amber-300', dot: 'bg-amber-400', label: 'PAUSED: MANEUVERS' },
+  PAUSED_ALL: { cls: 'bg-amber-500/20 text-amber-300', dot: 'bg-amber-400', label: 'PAUSED: ALL' },
+  PANICKED: { cls: 'bg-red-500/20 text-red-300', dot: 'bg-red-400', label: 'PANICKED' },
+};
 
 export function Header() {
   const { data } = useQuery({ queryKey: ['health'], queryFn: getHealth, refetchInterval: 30_000 });
+  const { data: killState } = useQuery({ queryKey: ['killState'], queryFn: getKillState, refetchInterval: 5_000, staleTime: 0 });
   const dryRun = data?.dryRun ?? false;
+  const mode: Mode = killState ? modeFromKillState(killState, Date.now()) : 'LIVE';
+  const ms = MODE_STYLE[mode];
   return (
     <header className="bg-panel border-b border-slate-700">
       <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
@@ -41,8 +54,32 @@ export function Header() {
           >
             Positions
           </NavLink>
+          <NavLink
+            to="/audit"
+            className={({ isActive }) =>
+              `px-3 py-1.5 rounded-md ${isActive ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white'}`
+            }
+          >
+            Audit
+          </NavLink>
+          <NavLink
+            to="/analytics"
+            className={({ isActive }) =>
+              `px-3 py-1.5 rounded-md ${isActive ? 'bg-slate-700 text-white' : 'text-slate-300 hover:text-white'}`
+            }
+          >
+            Analytics
+          </NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-3">
+          <HealthWidget />
+          <span
+            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium ${ms.cls}`}
+            title={`mode=${mode}`}
+          >
+            <span className={`w-2 h-2 rounded-full ${ms.dot} animate-pulse`} />
+            {ms.label}
+          </span>
           <span
             className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium ${
               dryRun ? 'bg-amber-500/20 text-amber-300' : 'bg-green-500/20 text-green-300'

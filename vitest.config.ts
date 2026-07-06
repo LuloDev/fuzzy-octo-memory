@@ -4,6 +4,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // NixOS Prisma engine shim — no-op on other platforms.
+    setupFiles: ['tests/setup/nixos-prisma.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],

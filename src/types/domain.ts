@@ -66,6 +66,16 @@ export type Position = {
 };
 
 // ============================================================
+// Market clock from Alpaca /v2/clock.
+// ============================================================
+export type MarketClock = {
+  isOpen: boolean;
+  timestamp: string;
+  nextOpen: string;
+  nextClose: string;
+};
+
+// ============================================================
 // Market snapshot for the risk engine.
 // ============================================================
 export type OptionQuote = {
