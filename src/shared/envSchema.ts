@@ -10,6 +10,11 @@ export const envSchema = z.object({
     .string()
     .url('APCA_BASE_URL must be a valid URL')
     .default('https://paper-api.alpaca.markets'),
+  // Market data. Same URL works for paper and live accounts.
+  APCA_DATA_URL: z
+    .string()
+    .url('APCA_DATA_URL must be a valid URL')
+    .default('https://data.alpaca.markets'),
 
   // Telegram
   TELEGRAM_BOT_TOKEN: z.string().min(1, 'TELEGRAM_BOT_TOKEN is required'),

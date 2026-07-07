@@ -7,14 +7,12 @@ import { Money } from '@/types/money';
 // a gain, then open a new spread on the threatened side.
 
 export type RollLegs = {
-  symbol: string;
   qty: string;
-  side: 'buy' | 'sell';
   type: 'limit';
   time_in_force: 'day';
   order_class: 'mleg';
   limit_price: string;
-  legs: { symbol: string; side: 'buy' | 'sell'; ratio_qty: string }[];
+  legs: { symbol: string; side: 'buy' | 'sell'; ratio_qty: string; position_intent: string }[];
 };
 
 // Close the untested-side spread (two legs only). Per the spec, this is a
@@ -30,31 +28,27 @@ export function buildRollCloseLegs(
   const contracts = position.contracts.toString();
   if (side === 'call') {
     return {
-      symbol,
       qty: contracts,
-      side: 'buy',
       type: 'limit',
       time_in_force: 'day',
       order_class: 'mleg',
       limit_price: limitPrice,
       legs: [
-        { symbol: defaultOsi('call', position.shortCallStrike, exp, symbol), side: 'buy', ratio_qty: '1' },
-        { symbol: defaultOsi('call', position.longCallStrike, exp, symbol), side: 'sell', ratio_qty: '1' },
+        { symbol: defaultOsi('call', position.shortCallStrike, exp, symbol), side: 'buy', ratio_qty: '1', position_intent: 'buy_to_close' },
+        { symbol: defaultOsi('call', position.longCallStrike, exp, symbol), side: 'sell', ratio_qty: '1', position_intent: 'sell_to_close' },
       ],
     };
   }
   // put side
   return {
-    symbol,
     qty: contracts,
-    side: 'buy',
     type: 'limit',
     time_in_force: 'day',
     order_class: 'mleg',
     limit_price: limitPrice,
     legs: [
-      { symbol: defaultOsi('put', position.shortPutStrike, exp, symbol), side: 'buy', ratio_qty: '1' },
-      { symbol: defaultOsi('put', position.longPutStrike, exp, symbol), side: 'sell', ratio_qty: '1' },
+      { symbol: defaultOsi('put', position.shortPutStrike, exp, symbol), side: 'buy', ratio_qty: '1', position_intent: 'buy_to_close' },
+      { symbol: defaultOsi('put', position.longPutStrike, exp, symbol), side: 'sell', ratio_qty: '1', position_intent: 'sell_to_close' },
     ],
   };
 }
@@ -70,16 +64,14 @@ export function buildRollOpenLegs(
   const symbol = position.symbol;
   const exp = position.expiration;
   return {
-    symbol,
     qty: position.contracts.toString(),
-    side: 'buy',
     type: 'limit',
     time_in_force: 'day',
     order_class: 'mleg',
     limit_price: credit,
     legs: [
-      { symbol: defaultOsi(side, newLongStrike, exp, symbol), side: 'buy', ratio_qty: '1' },
-      { symbol: defaultOsi(side, newShortStrike, exp, symbol), side: 'sell', ratio_qty: '1' },
+      { symbol: defaultOsi(side, newShortStrike, exp, symbol), side: 'sell', ratio_qty: '1', position_intent: 'sell_to_open' },
+      { symbol: defaultOsi(side, newLongStrike, exp, symbol), side: 'buy', ratio_qty: '1', position_intent: 'buy_to_open' },
     ],
   };
 }

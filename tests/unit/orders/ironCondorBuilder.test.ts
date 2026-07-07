@@ -53,9 +53,9 @@ describe('computeNetCredit', () => {
       { symbol: 'SPY260710C00438000', side: 'call' as const, strike: '438', bid: '1.00', ask: '1.20', quotedAt: 't' },
       { symbol: 'SPY260710C00440000', side: 'call' as const, strike: '440', bid: '0.40', ask: '0.60', quotedAt: 't' },
     ];
-    // mid: shortPut 1.10 + shortCall 1.10 − longPut 0.50 − longCall 0.50 = 1.20, ×100 = 120
+    // shortPut(bid=1.00) + shortCall(bid=1.00) − longPut(ask=0.60) − longCall(ask=0.60) = 0.80, ×100 = 80
     const credit = computeNetCredit(plan, quotes);
-    expect(credit.toString()).toBe('120');
+    expect(credit.toString()).toBe('80');
   });
 });
 
@@ -71,12 +71,13 @@ describe('buildOpenOrder', () => {
     expect(out.payload.order_class).toBe('mleg');
     expect(out.payload.legs).toHaveLength(4);
     expect(out.payload.qty).toBe('1');
-    expect(out.payload.symbol).toBe('SPY');
     // Every leg has a 16-char OSI symbol: 3-char ticker + 6-char date + P/C + 8-digit strike.
     for (const leg of out.payload.legs) {
       expect(leg.symbol).toMatch(/^SPY260710[PC]\d{8}$/);
+      expect(leg.position_intent).toMatch(/^(buy|sell)_to_open$/);
     }
-    // Limit price is the net credit, computed via Money (string).
+    // Credit spread: limit price is negative in Alpaca's API.
+    expect(out.payload.limit_price).toMatch(/^-/);
     expect(typeof out.payload.limit_price).toBe('string');
   });
 });

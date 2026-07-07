@@ -79,6 +79,8 @@ export const PayoffDto = z.object({
   maxLoss: z.string(),
   underlyingPrice: z.string(),
   curve: z.array(PayoffPointDto),
+  priceLow2W: z.string().nullable(),
+  priceHigh2W: z.string().nullable(),
 });
 
 export const EquityPointDto = z.object({ date: z.string(), equity: z.string(), pnl: z.string() });

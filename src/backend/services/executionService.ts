@@ -8,7 +8,8 @@ import type {
   Intent, Position, TickerConfig, MarketSnapshot,
 } from '@/types/domain';
 import type { AlertKind } from '@/types/events';
-import { buildOpenOrder } from '@/backend/orders/ironCondorBuilder';
+import { buildOpenOrder, type IronCondorOrder, type StrikePlan } from '@/backend/orders/ironCondorBuilder';
+import type { AlpacaOrderResponse } from '@/backend/services/alpacaService';
 import { buildCloseOrder } from '@/backend/orders/closeBuilder';
 import {
   buildRollCloseLegs,
@@ -47,10 +48,9 @@ export class ExecutionService {
   async openIronCondor(
     config: TickerConfig,
     snapshot: MarketSnapshot,
-    contracts: number,
   ): Promise<{ positionId: string | null; intentId: string; accepted: boolean }> {
     const intentId = randomUUID();
-    const expiration = expirationISO();
+    const expiration = expirationISO().slice(0, 10);
 
     // Duplicate entry check (FR-004).
     const existing = await persistence.findOpenPositionForWeek(config.symbol, new Date(expiration));
@@ -65,6 +65,12 @@ export class ExecutionService {
       await this.failOpen(intentId, config, 'BROKER_UNREACHABLE', acct.error.message);
       return { positionId: null, intentId, accepted: false };
     }
+    // Compute contracts from available option buying power.
+    const obp = parseFloat(acct.value.options_buying_power ?? acct.value.buying_power);
+    const alloc = parseFloat(config.allocationPercentage) / 100;
+    const maxLossPerContract = parseFloat(config.widthOfSpread) * 100;
+    const contracts = Math.max(1, Math.min(6, Math.floor((obp * alloc) / maxLossPerContract)));
+    logger.info('execution', 'contracts calculated', { ticker: config.symbol, obp, alloc, maxLossPerContract, contracts });
     const built = buildOpenOrder(config, snapshot, expiration, contracts);
     const pf = marginPreflight(acct.value.buying_power, config.widthOfSpread, built.credit, contracts);
     if (!pf.ok) {
@@ -75,31 +81,36 @@ export class ExecutionService {
     // Dry-run guardrail #5: no broker traffic when DRY_RUN=true.
     if (env.DRY_RUN) {
       logger.info('execution', 'dry-run open (no broker traffic)', { ticker: config.symbol, intentId });
-      const event = await persistence.recordEvent({
-        positionId: 'dry-run',
-        kind: 'OPENED',
-        marketSnapshot: snapshot,
-        intent: { kind: 'Open', configId: config.id, expiration },
-      });
-      await persistence.recordOrder({
-        positionId: 'dry-run',
-        positionEventId: event.id,
-        intentId,
-        request: built.payload,
-        response: null,
-        status: 'PENDING',
-      });
-      return { positionId: null, intentId, accepted: false };
+      return { positionId: null, intentId, accepted: true };
     }
 
     // Live submit.
     const res = await alpaca.submitOrder(built.payload as unknown as Record<string, unknown>);
     if (!res.ok) {
+      // Retry with 1 contract if buying power insufficient.
+      if ((res.error.body?.includes('options buying power') ?? false)) {
+        const retryBuilt = buildOpenOrder(config, snapshot, expiration, 1);
+        const retryRes = await alpaca.submitOrder(retryBuilt.payload as unknown as Record<string, unknown>);
+        if (retryRes.ok) {
+          logger.info('execution', 'retry succeeded with 1 contract', { ticker: config.symbol, intentId });
+          return this.persistOpenOrder(config, snapshot, expiration, retryBuilt, retryRes.value, intentId);
+        }
+      }
       await this.failOpen(intentId, config, 'BROKER_UNREACHABLE', res.error.message);
       return { positionId: null, intentId, accepted: false };
     }
 
-    // Persist the position + events + order row.
+    return this.persistOpenOrder(config, snapshot, expiration, built, res.value, intentId);
+  }
+
+  private async persistOpenOrder(
+    config: TickerConfig,
+    snapshot: MarketSnapshot,
+    expiration: string,
+    built: { plan: StrikePlan; credit: string; payload: IronCondorOrder },
+    orderResponse: AlpacaOrderResponse,
+    intentId: string,
+  ): Promise<{ positionId: string; intentId: string; accepted: boolean }> {
     const position = await persistence.createPosition({
       tickerConfigId: config.id,
       symbol: config.symbol,
@@ -108,7 +119,7 @@ export class ExecutionService {
       longPutStrike: built.plan.longPut,
       shortCallStrike: built.plan.shortCall,
       longCallStrike: built.plan.longCall,
-      contracts,
+      contracts: parseInt(built.payload.qty),
       entryCredit: built.credit,
       entryTimestamp: new Date().toISOString(),
       currentValue: null,
@@ -127,20 +138,18 @@ export class ExecutionService {
       positionEventId: event.id,
       intentId,
       request: built.payload,
-      response: res.value,
+      response: orderResponse,
       status: 'ACCEPTED',
-      alpacaOrderId: res.value.id,
+      alpacaOrderId: orderResponse.id,
     });
-
     await telegram.send({
       kind: 'ENTRY_OPENED' as AlertKind,
       title: 'Iron Condor opened',
       ticker: config.symbol,
       positionId: position.id,
       intentId,
-      body: `Short put ${built.plan.shortPut} / long put ${built.plan.longPut}, short call ${built.plan.shortCall} / long call ${built.plan.longCall}; ${contracts} contracts; credit ${built.credit}`,
+      body: `Short put ${built.plan.shortPut} / long put ${built.plan.longPut}, short call ${built.plan.shortCall} / long call ${built.plan.longCall}; ${built.payload.qty} contracts; credit ${built.credit}`,
     });
-
     return { positionId: position.id, intentId, accepted: true };
   }
 
@@ -333,12 +342,6 @@ export class ExecutionService {
     _reason: string,
     message: string,
   ): Promise<void> {
-    await persistence.recordEvent({
-      positionId: 'dry-run',
-      kind: 'OPEN_REJECTED',
-      marketSnapshot: { ticker: config.symbol },
-      intent: { kind: 'Reject', reason: 'MARGIN_INSUFFICIENT' },
-    });
     logger.error('execution', 'open failed', { ticker: config.symbol, intentId, message });
     await telegram.send({
       kind: _reason === 'MARGIN_INSUFFICIENT' ? ('MARGIN_SHORTFALL' as AlertKind) : ('BROKER_ERROR' as AlertKind),

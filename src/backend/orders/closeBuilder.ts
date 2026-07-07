@@ -7,16 +7,16 @@ import type { Position } from '@/types/domain';
 export function buildCloseOrder(position: Position, limitPrice: string): IronCondorOrder {
   const plan = planFromPosition(position);
   const symbol = position.symbol;
+  // Legs ordered: calls first, puts second; short before long.
+  // position_intent reverses the opening intent (buy_to_close / sell_to_close).
   const legs = [
-    { symbol: defaultOsi('put', plan.shortPut, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('put', plan.longPut, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('call', plan.shortCall, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('call', plan.longCall, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
+    { symbol: defaultOsi('call', plan.shortCall, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_close' },
+    { symbol: defaultOsi('call', plan.longCall, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_close' },
+    { symbol: defaultOsi('put', plan.shortPut, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_close' },
+    { symbol: defaultOsi('put', plan.longPut, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_close' },
   ];
   return {
-    symbol,
     qty: position.contracts.toString(),
-    side: 'sell',
     type: 'limit',
     time_in_force: 'day',
     order_class: 'mleg',
@@ -31,16 +31,15 @@ export type MarketMleg = Omit<IronCondorOrder, 'limit_price' | 'type'> & { type:
 export function buildPanicCloseOrder(position: Position): MarketMleg {
   const plan = planFromPosition(position);
   const symbol = position.symbol;
+  // Legs ordered: calls first, puts second; short before long.
   const legs = [
-    { symbol: defaultOsi('put', plan.shortPut, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('put', plan.longPut, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('call', plan.shortCall, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
-    { symbol: defaultOsi('call', plan.longCall, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
+    { symbol: defaultOsi('call', plan.shortCall, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_close' },
+    { symbol: defaultOsi('call', plan.longCall, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_close' },
+    { symbol: defaultOsi('put', plan.shortPut, plan.expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_close' },
+    { symbol: defaultOsi('put', plan.longPut, plan.expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_close' },
   ];
   return {
-    symbol,
     qty: position.contracts.toString(),
-    side: 'sell',
     type: 'market',
     time_in_force: 'day',
     order_class: 'mleg',

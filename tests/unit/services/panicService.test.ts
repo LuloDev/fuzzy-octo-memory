@@ -24,11 +24,16 @@ describe('buildPanicCloseOrder', () => {
     expect(o.order_class).toBe('mleg');
     expect('limit_price' in o).toBe(false);
     expect(o.legs).toHaveLength(4);
-    // Original opening was: sell short put, buy long put, sell short call, buy long call
-    // Panic reverses every direction.
-    expect(o.legs[0]?.side).toBe('buy'); // was sell short put
-    expect(o.legs[1]?.side).toBe('sell'); // was buy long put
-    expect(o.legs[2]?.side).toBe('buy'); // was sell short call
-    expect(o.legs[3]?.side).toBe('sell'); // was buy long call
+    // Legs ordered: calls first, puts second; short before long.
+    // Opening: shortCall(sell_to_open), longCall(buy_to_open), shortPut(sell_to_open), longPut(buy_to_open)
+    // Close reverses every direction.
+    expect(o.legs[0]?.side).toBe('buy');  // buy_to_close short call
+    expect(o.legs[0]?.position_intent).toBe('buy_to_close');
+    expect(o.legs[1]?.side).toBe('sell'); // sell_to_close long call
+    expect(o.legs[1]?.position_intent).toBe('sell_to_close');
+    expect(o.legs[2]?.side).toBe('buy');  // buy_to_close short put
+    expect(o.legs[2]?.position_intent).toBe('buy_to_close');
+    expect(o.legs[3]?.side).toBe('sell'); // sell_to_close long put
+    expect(o.legs[3]?.position_intent).toBe('sell_to_close');
   });
 });

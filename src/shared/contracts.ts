@@ -73,6 +73,8 @@ export const PayoffDto = z.object({
   maxLoss: z.string(),
   underlyingPrice: z.string(),
   curve: z.array(PayoffPointDto),
+  priceLow2W: z.string().nullable(),
+  priceHigh2W: z.string().nullable(),
 });
 export type PayoffDto = z.infer<typeof PayoffDto>;
 

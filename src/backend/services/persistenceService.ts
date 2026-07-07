@@ -159,7 +159,7 @@ export const persistence = {
     if (!previous) throw new Error(`TickerConfig ${id} not found`);
     const data: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patch)) {
-      if (v !== undefined) data[k] = v;
+      if (v !== undefined && k !== 'reason') data[k] = v;
     }
     const updated = await db().tickerConfig.update({
       where: { id },

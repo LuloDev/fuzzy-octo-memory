@@ -22,21 +22,25 @@ function fail(kind: BrokerError['kind'], message: string, extra: Partial<BrokerE
   return { ok: false, error: { kind, message, ...extra } };
 }
 
-function authHeaders(): Record<string, string> {
-  return {
+function authHeaders(body?: unknown): Record<string, string> {
+  const h: Record<string, string> = {
     'APCA-API-KEY-ID': env.APCA_API_KEY_ID,
     'APCA-API-SECRET-KEY': env.APCA_API_SECRET_KEY,
-    'content-type': 'application/json',
   };
+  if (body !== undefined) {
+    h['content-type'] = 'application/json';
+  }
+  return h;
 }
 
 async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  baseUrl?: string,
 ): Promise<Result<T>> {
-  const url = `${env.APCA_BASE_URL}${path}`;
-  const init: RequestInit = { method, headers: authHeaders() };
+  const url = `${baseUrl ?? env.APCA_BASE_URL}${path}`;
+  const init: RequestInit = { method, headers: authHeaders(body) };
   if (body !== undefined) init.body = JSON.stringify(body);
   const startMs = Date.now();
   let result: Result<T>;
@@ -47,6 +51,8 @@ async function request<T>(
       if (res.status === 429) {
         result = fail('RATE_LIMITED', `Alpaca rate limit on ${method} ${path}`, { httpStatus: res.status, body: text });
       } else {
+        // Log the response body for non-2xx so we can diagnose auth/access issues.
+        logger.warn('alpaca', `${method} ${path} → ${res.status}`, { body: text.slice(0, 500) });
         result = fail('NON_2XX', `Alpaca ${method} ${path} → ${res.status}`, { httpStatus: res.status, body: text });
       }
     } else {
@@ -72,7 +78,7 @@ async function request<T>(
 // Map raw call results to the HealthSignal status enum.
 type HealthKind = 'broker' | 'quote';
 async function recordHealth(method: string, path: string, result: Result<unknown>, latencyMs: number): Promise<void> {
-  const isQuote = path.startsWith('/v2/options/quotes') || path.startsWith('/v2/options/snapshots');
+  const isQuote = path.startsWith('/v1beta1/options/quotes') || path.startsWith('/v1beta1/options/snapshots');
   const kind: HealthKind = isQuote ? 'quote' : 'broker';
   const status: 'OK' | 'DEGRADED' | 'UNREACHABLE' = !result.ok
     ? result.error.kind === 'TRANSPORT'
@@ -116,6 +122,7 @@ export type Account = {
   cash: string;
   portfolio_value: string;
   last_equity: string;
+  options_buying_power?: string;
 };
 
 export type PositionRow = {
@@ -149,27 +156,87 @@ export class AlpacaService {
     return r;
   }
 
-  /** Quote for a single option contract (used for live mark-to-market). */
-  async getOptionQuote(osi: string): Promise<Result<OptionQuote>> {
+  /** Daily bars for the last N days — used to determine the 2-week price range for chart zoom. */
+  async getStockBars(
+    symbol: string,
+    start: string,
+    end: string,
+  ): Promise<Result<{ h: number; l: number }[]>> {
     const r = await request<{
-      quote: { bp: string; ap: string; t: string };
-      underlying_price?: string;
-      greeks?: { delta?: string };
-    }>('GET', `/v2/options/quotes/latest?symbols=${encodeURIComponent(osi)}&feed=indicative`);
+      bars: { t: string; o: number; h: number; l: number; c: number; v: number }[];
+    }>(
+      'GET',
+      `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=1Day&start=${start}&end=${end}&adjustment=raw`,
+      undefined,
+      env.APCA_DATA_URL,
+    );
     if (!r.ok) return r;
-    const q = r.value.quote;
-    const out: OptionQuote = {
-      symbol: osi,
-      side: osi.includes('P') ? 'put' : 'call',
-      strike: '0',
-      bid: q.bp,
-      ask: q.ap,
-      quotedAt: q.t,
-    };
-    if (r.value.greeks?.delta !== undefined) {
-      out.delta = r.value.greeks.delta;
+    return ok((r.value.bars ?? []).map((b) => ({ h: b.h, l: b.l })));
+  }
+
+  /** Latest stock quote (NBBO) from the data API — used for the underlying price. */
+  async getStockQuote(symbol: string): Promise<Result<{ bid: string; ask: string }>> {
+    const r = await request<{
+      symbol: string;
+      quote: { bp: number; ap: number; t: string };
+    }>('GET', `/v2/stocks/${encodeURIComponent(symbol)}/quotes/latest`, undefined, env.APCA_DATA_URL);
+    if (!r.ok) return r;
+    return ok({ bid: String(r.value.quote.bp), ask: String(r.value.quote.ap) });
+  }
+
+  /** Batch-fetch latest quotes for multiple option OSI symbols at once.
+   *  Served from the data API (APCA_DATA_URL). The v1beta1 format uses a
+   *  flat structure (no nested `quote` key) and numeric bid/ask values.
+   */
+  async getOptionQuotesBatch(osis: string[]): Promise<Result<OptionQuote[]>> {
+    if (osis.length === 0) return ok([]);
+    const csv = osis.map((s) => encodeURIComponent(s)).join(',');
+    const url = `/v1beta1/options/quotes/latest?symbols=${csv}`;
+    const r = await request<{
+      quotes: Record<string, { ap: number; as: number; bp: number; bs: number; t: string }>;
+    }>('GET', url, undefined, env.APCA_DATA_URL);
+    if (!r.ok) return r;
+    const entries = r.value.quotes ?? {};
+    const keys = Object.keys(entries);
+    logger.debug('alpaca', 'getOptionQuotesBatch response', { requested: osis.length, returned: keys.length, samples: keys.slice(0, 3) });
+    const out: OptionQuote[] = [];
+    for (const [osi, data] of Object.entries(entries)) {
+      const strikeRaw = parseInt(osi.slice(-8), 10);
+      const side: 'put' | 'call' = osi[osi.length - 9] === 'C' ? 'call' : 'put';
+      const q: OptionQuote = {
+        symbol: osi,
+        side,
+        strike: (strikeRaw / 1000).toFixed(2),
+        bid: String(data.bp),
+        ask: String(data.ap),
+        quotedAt: data.t,
+      };
+      out.push(q);
     }
     return ok(out);
+  }
+
+  /** Quote for a single option contract (used for live mark-to-market).
+   *  Served from the data API (APCA_DATA_URL).
+   */
+  async getOptionQuote(osi: string): Promise<Result<OptionQuote>> {
+    const r = await request<{
+      quotes: Record<string, { ap: number; as: number; bp: number; bs: number; t: string }>;
+    }>('GET', `/v1beta1/options/quotes/latest?symbols=${encodeURIComponent(osi)}&feed=indicative`, undefined, env.APCA_DATA_URL);
+    if (!r.ok) return r;
+    const entry = r.value.quotes?.[osi];
+    if (!entry) {
+      return fail('NON_2XX', `No quote for ${osi}`);
+    }
+    const strikeRaw = parseInt(osi.slice(-8), 10);
+    return ok({
+      symbol: osi,
+      side: osi[osi.length - 9] === 'C' ? 'call' : 'put',
+      strike: (strikeRaw / 1000).toFixed(2),
+      bid: String(entry.bp),
+      ask: String(entry.ap),
+      quotedAt: entry.t,
+    });
   }
 
   /** Current market clock — used to determine if the market is open. */

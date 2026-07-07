@@ -86,7 +86,7 @@ export function PositionList() {
               close
             </button>
           </div>
-          <PayoffChart positionId={selected.id} />
+          <PayoffChart position={selected} />
         </div>
       )}
     </div>

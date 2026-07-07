@@ -6,14 +6,12 @@ import { logger } from '@/backend/services/structuredLogger';
 // All math goes through the Money helper (Constitution Principle I).
 
 export type IronCondorOrder = {
-  symbol: string;
   qty: string;
-  side: 'buy' | 'sell';
   type: 'limit';
   time_in_force: 'day';
   order_class: 'mleg';
   limit_price: string;
-  legs: { symbol: string; side: 'buy' | 'sell'; ratio_qty: string }[];
+  legs: { symbol: string; side: 'buy' | 'sell'; ratio_qty: string; position_intent: string }[];
 };
 
 export type StrikePlan = {
@@ -48,40 +46,60 @@ export function planStrikes(
 
   const puts = snapshot.quotes.filter((q) => q.side === 'put' && q.symbol.includes(osiDateFragment));
   const calls = snapshot.quotes.filter((q) => q.side === 'call' && q.symbol.includes(osiDateFragment));
+  logger.info('orders', 'planStrikes — quote breakdown', { symbol: snapshot.symbol, puts: puts.length, calls: calls.length, total: snapshot.quotes.length });
 
   const pickShort = (quotes: OptionQuote[]): Money => {
     let best: OptionQuote | null = null;
     let bestDiff = Infinity;
     for (const q of quotes) {
-      if (q.delta == null) continue;
-      const d = Money.from(q.delta).abs();
-      const diff = d.minus(target).abs().toNumber();
-      if (diff < bestDiff) {
-        bestDiff = diff;
+      if (q.delta != null) {
+        const d = Money.from(q.delta).abs();
+        const diff = d.minus(target).abs().toNumber();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = q;
+        }
+      }
+    }
+    if (best) return Money.from(best.strike);
+    // fallback: pick the strike closest to underlyingPrice − widthOfSpread
+    const targetStrike = Money.from(snapshot.underlyingPrice).minus(width);
+    for (const q of quotes) {
+      const d = Money.from(q.strike).minus(targetStrike).abs();
+      if (d.toNumber() < bestDiff) {
+        bestDiff = d.toNumber();
         best = q;
       }
     }
     if (best) return Money.from(best.strike);
-    // fallback: widthOfSpread away from underlying on each side
-    const px = Money.from(snapshot.underlyingPrice);
-    return px.minus(width);
+    return targetStrike;
   };
 
   const pickShortCall = (quotes: OptionQuote[]): Money => {
     let best: OptionQuote | null = null;
     let bestDiff = Infinity;
     for (const q of quotes) {
-      if (q.delta == null) continue;
-      const d = Money.from(q.delta).abs();
-      const diff = d.minus(target).abs().toNumber();
-      if (diff < bestDiff) {
-        bestDiff = diff;
+      if (q.delta != null) {
+        const d = Money.from(q.delta).abs();
+        const diff = d.minus(target).abs().toNumber();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = q;
+        }
+      }
+    }
+    if (best) return Money.from(best.strike);
+    // fallback: pick the strike closest to underlyingPrice + widthOfSpread
+    const targetStrike = Money.from(snapshot.underlyingPrice).plus(width);
+    for (const q of quotes) {
+      const d = Money.from(q.strike).minus(targetStrike).abs();
+      if (d.toNumber() < bestDiff) {
+        bestDiff = d.toNumber();
         best = q;
       }
     }
     if (best) return Money.from(best.strike);
-    const px = Money.from(snapshot.underlyingPrice);
-    return px.plus(width);
+    return targetStrike;
   };
 
   const shortPut = pickShort(puts);
@@ -109,23 +127,25 @@ export function computeNetCredit(plan: StrikePlan, quotes: OptionQuote[]): Money
   const dd = iso.slice(8, 10);
   const mm = iso.slice(5, 7);
   const osiDateFragment = `${yy}${mm}${dd}`;
-  const find = (side: 'put' | 'call', strike: string): Money => {
-    const q = quotes.find((x) => x.side === side && x.symbol.includes(osiDateFragment) && x.strike === strike);
-    if (!q) {
-      logger.warn('orders', 'no quote for leg; using 0 credit', { side, strike });
-      return Money.zero();
-    }
-    // mid price is conservative
-    return Money.from(q.bid).plus(Money.from(q.ask)).div(Money.from('2'));
-  };
+  const qFor = (side: 'put' | 'call', strike: string): OptionQuote | undefined =>
+    quotes.find((x) => x.side === side && x.symbol.includes(osiDateFragment) && parseFloat(x.strike) === parseFloat(strike));
 
-  const shortPut = find('put', plan.shortPut);
-  const longPut = find('put', plan.longPut);
-  const shortCall = find('call', plan.shortCall);
-  const longCall = find('call', plan.longCall);
+  const shortPutQ = qFor('put', plan.shortPut);
+  const shortCallQ = qFor('call', plan.shortCall);
+  const longPutQ = qFor('put', plan.longPut);
+  const longCallQ = qFor('call', plan.longCall);
 
-  // We are sellers on the short strikes and buyers on the long strikes.
-  // net credit = shortPut + shortCall − longPut − longCall
+  // Sell legs use bid (what buyers will pay us), buy legs use ask.
+  const shortPut = shortPutQ ? Money.from(shortPutQ.bid) : Money.zero();
+  const shortCall = shortCallQ ? Money.from(shortCallQ.bid) : Money.zero();
+  const longPut = longPutQ ? Money.from(longPutQ.ask) : Money.zero();
+  const longCall = longCallQ ? Money.from(longCallQ.ask) : Money.zero();
+
+  if (!shortPutQ || !shortCallQ || !longPutQ || !longCallQ) {
+    logger.warn('orders', 'missing quote for leg; using 0', { shortPut: !!shortPutQ, shortCall: !!shortCallQ, longPut: !!longPutQ, longCall: !!longCallQ });
+  }
+
+  // net credit = shortPut(bid) + shortCall(bid) − longPut(ask) − longCall(ask)
   return shortPut.plus(shortCall).minus(longPut).minus(longCall).mul(Money.from('100'));
 }
 
@@ -144,24 +164,28 @@ export function buildOpenOrder(
   const credit = computeNetCredit(plan, snapshot.quotes).toString();
 
   const symbol = config.symbol;
+  // Leg order: calls first, puts second; short before long within each spread.
+  // position_intent tells Alpaca these are openings for defined-risk margin.
   const legs = [
-    { symbol: osiBuilder('put', plan.shortPut, expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
-    { symbol: osiBuilder('put', plan.longPut, expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
-    { symbol: osiBuilder('call', plan.shortCall, expiration, symbol), side: 'sell' as const, ratio_qty: '1' },
-    { symbol: osiBuilder('call', plan.longCall, expiration, symbol), side: 'buy' as const, ratio_qty: '1' },
+    { symbol: osiBuilder('call', plan.shortCall, expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_open' },
+    { symbol: osiBuilder('call', plan.longCall, expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_open' },
+    { symbol: osiBuilder('put', plan.shortPut, expiration, symbol), side: 'sell' as const, ratio_qty: '1', position_intent: 'sell_to_open' },
+    { symbol: osiBuilder('put', plan.longPut, expiration, symbol), side: 'buy' as const, ratio_qty: '1', position_intent: 'buy_to_open' },
   ];
+  // Credit orders use a negative per-share limit_price in Alpaca's API.
+  // computeNetCredit returns dollars per contract (×100); divide by 100 for per-share.
+  const perShare = Money.from(credit).div(Money.from('100'));
+  const limitPrice = perShare.isNegative() ? perShare.toString() : `-${perShare.toString()}`;
 
   return {
     plan,
     credit,
     payload: {
-      symbol,
       qty: contracts.toString(),
-      side: 'buy',
       type: 'limit',
       time_in_force: 'day',
       order_class: 'mleg',
-      limit_price: credit,
+      limit_price: limitPrice,
       legs,
     },
   };

@@ -7,13 +7,11 @@ import { gammaExposureCurve } from '@/backend/services/gammaCurve';
 import { theoreticalDecaySeries } from '@/backend/services/thetaDecay';
 import type { PositionWithProximityDto } from '@/shared/contracts';
 
-// Best-effort underlying price fetch. We don't fail the request if Alpaca
-// is unreachable — `currentUnderlyingPrice` falls back to null and the
-// dashboard shows an explanatory empty state (spec FR-006).
+// Best-effort underlying price fetch via the data API (not the trading API).
 async function fetchUnderlyingPrice(symbol: string): Promise<string | null> {
-  const r = await alpaca.getPosition(symbol);
-  if (r.ok && r.value && r.value.avg_entry_price) {
-    return r.value.avg_entry_price;
+  const r = await alpaca.getStockQuote(symbol);
+  if (r.ok) {
+    return String((parseFloat(r.value.bid) + parseFloat(r.value.ask)) / 2);
   }
   return null;
 }
@@ -109,6 +107,21 @@ export async function positionRoutes(app: FastifyInstance): Promise<void> {
       expectedMove = null;
     }
 
+    // 2-week price range: used by the chart to zoom the Y-axis around the
+    // current underlying price rather than the full max-profit/max-loss span.
+    let priceLow2W: string | null = null;
+    let priceHigh2W: string | null = null;
+    if (underlyingPrice !== null) {
+      const end = new Date().toISOString().slice(0, 10);
+      const start = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const barsResult = await alpaca.getStockBars(p.symbol, start, end);
+      if (barsResult.ok && barsResult.value.length > 0) {
+        const prices = barsResult.value.flatMap((b) => [b.h, b.l]);
+        priceLow2W = Math.min(...prices).toFixed(2);
+        priceHigh2W = Math.max(...prices).toFixed(2);
+      }
+    }
+
     return {
       breakEvenLower: breakEvenLower.toFixed(2),
       breakEvenUpper: breakEvenUpper.toFixed(2),
@@ -117,6 +130,8 @@ export async function positionRoutes(app: FastifyInstance): Promise<void> {
       underlyingPrice: underlyingPrice ?? '0.00',
       curve,
       expectedMove,
+      priceLow2W,
+      priceHigh2W,
     };
   });
 
